@@ -102,6 +102,8 @@ struct App
     // Texture (Box 전용)
     ComPtr<ID3D11ShaderResourceView> m_TexSRV;
     ComPtr<ID3D11SamplerState>       m_Sampler;
+    ComPtr<ID3D11ShaderResourceView> m_TexSRVGrass;
+    ComPtr<ID3D11SamplerState>       m_SamplerGrass;
 
     // Geometry
     ComPtr<ID3D11Buffer>             m_GridVB;
@@ -109,6 +111,8 @@ struct App
 
     ComPtr<ID3D11Buffer>             m_BoxVB;
     ComPtr<ID3D11Buffer>             m_BoxIB;
+    ComPtr<ID3D11Buffer>             m_GrassVB;
+    ComPtr<ID3D11Buffer>             m_GrassIB;
     UINT                             m_BoxIndexCount = 0;
 
     // Transform
@@ -216,8 +220,10 @@ struct App
         CreateConstantBuffer();
         CreateGridVB();
         CreateBoxMesh();
+        CreateGrassBoxMesh();
         CreateSkyMesh();
         LoadBoxTexture();
+        LoadGrassBoxTexture();
         LoadSkyTexture();
         CreateSkyRenderStates();
 
@@ -587,6 +593,86 @@ struct App
         m_Device->CreateBuffer(&ibd, &isd, m_BoxIB.GetAddressOf());
     }
 
+    void CreateGrassBoxMesh()
+    {
+        // 정점 정보
+        Vector3 p[8] =
+        {
+            {-0.5f, 0.0f, -0.5f}, {+0.5f, 0.0f, -0.5f},
+            {+0.5f, 1.0f, -0.5f}, {-0.5f, 1.0f, -0.5f},
+            {-0.5f, 0.0f, +0.5f}, {+0.5f, 0.0f, +0.5f},
+            {+0.5f, 1.0f, +0.5f}, {-0.5f, 1.0f, +0.5f},
+        };
+
+        // UV만 추가
+       /* VertexPT v24[24] =
+        {
+            {p[0], {0,1}}, {p[1], {1,1}}, {p[2], {1,0}}, {p[3], {0,0}},
+            {p[1], {0,1}}, {p[5], {1,1}}, {p[6], {1,0}}, {p[2], {0,0}},
+            {p[5], {0,1}}, {p[4], {1,1}}, {p[7], {1,0}}, {p[6], {0,0}},
+            {p[4], {0,1}}, {p[0], {1,1}}, {p[3], {1,0}}, {p[7], {0,0}},
+            {p[3], {0,1}}, {p[2], {1,1}}, {p[6], {1,0}}, {p[7], {0,0}},
+            {p[4], {0,0}}, {p[5], {1,0}}, {p[1], {1,1}}, {p[0], {0,1}},
+        };*/
+
+        // UV + 노멀 추가
+        VertexPTN v24[24] =
+        {
+            // Front (-Z)
+            {p[0], {0,1}, {0,0,-1}}, {p[1], {1,1}, {0,0,-1}},
+            {p[2], {1,0}, {0,0,-1}}, {p[3], {0,0}, {0,0,-1}},
+
+            // Right (+X)
+            {p[1], {0,1}, {1,0,0}}, {p[5], {1,1}, {1,0,0}},
+            {p[6], {1,0}, {1,0,0}}, {p[2], {0,0}, {1,0,0}},
+
+            // Back (+Z)
+            {p[5], {0,1}, {0,0,1}}, {p[4], {1,1}, {0,0,1}},
+            {p[7], {1,0}, {0,0,1}}, {p[6], {0,0}, {0,0,1}},
+
+            // Left (-X)
+            {p[4], {0,1}, {-1,0,0}}, {p[0], {1,1}, {-1,0,0}},
+            {p[3], {1,0}, {-1,0,0}}, {p[7], {0,0}, {-1,0,0}},
+
+            // Top (+Y)
+            {p[3], {0,1}, {0,1,0}}, {p[2], {1,1}, {0,1,0}},
+            {p[6], {1,0}, {0,1,0}}, {p[7], {0,0}, {0,1,0}},
+
+            // Bottom (-Y)
+            {p[4], {0,0}, {0,-1,0}}, {p[5], {1,0}, {0,-1,0}},
+            {p[1], {1,1}, {0,-1,0}}, {p[0], {0,1}, {0,-1,0}},
+        };
+
+
+        uint16_t idx[] =
+        {
+            0,1,2, 0,2,3,
+            4,5,6, 4,6,7,
+            8,9,10, 8,10,11,
+            12,13,14, 12,14,15,
+            16,17,18, 16,18,19,
+            20,21,22, 20,22,23
+        };
+
+        m_BoxIndexCount = _countof(idx);
+
+
+
+        D3D11_BUFFER_DESC vbd{};
+        vbd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        vbd.ByteWidth = sizeof(v24);
+        vbd.Usage = D3D11_USAGE_IMMUTABLE;
+        D3D11_SUBRESOURCE_DATA vsd{ v24, 0, 0 };
+        m_Device->CreateBuffer(&vbd, &vsd, m_GrassVB.GetAddressOf());
+
+        D3D11_BUFFER_DESC ibd{};
+        ibd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+        ibd.ByteWidth = sizeof(idx);
+        ibd.Usage = D3D11_USAGE_IMMUTABLE;
+        D3D11_SUBRESOURCE_DATA isd{ idx, 0, 0 };
+        m_Device->CreateBuffer(&ibd, &isd, m_GrassIB.GetAddressOf());
+    }
+    
     void LoadBoxTexture()
     {
         CreateWICTextureFromFile(
@@ -597,6 +683,18 @@ struct App
         sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
         sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
         m_Device->CreateSamplerState(&sd, m_Sampler.GetAddressOf());
+    }
+
+    void LoadGrassBoxTexture()
+    {
+        CreateWICTextureFromFile(
+            m_Device.Get(), m_Context.Get(),
+            L"Field_micro04.dds", nullptr, m_TexSRVGrass.GetAddressOf());
+
+        D3D11_SAMPLER_DESC sd{};
+        sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+        m_Device->CreateSamplerState(&sd, m_SamplerGrass.GetAddressOf());
     }
 
     void UpdateAndDraw()
@@ -883,6 +981,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             int delta = GET_WHEEL_DELTA_WPARAM(wParam);
             g_App->m_CamRadius *= (delta > 0) ? 0.9f : 1.1f;
             g_App->UpdateView();
+        }
+        break;
+
+    case WM_MBUTTONDOWN:  //Wheel 클릭
+        if (g_App)
+        {
+            g_App->m_LastMouse.x = GET_X_LPARAM(lParam);
+            g_App->m_LastMouse.y = GET_Y_LPARAM(lParam);
+            g_App->OnClick(g_App->m_LastMouse.x, g_App->m_LastMouse.y);
         }
         break;
 
