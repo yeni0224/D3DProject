@@ -24,6 +24,7 @@ using Microsoft::WRL::ComPtr;
 using namespace DirectX;
 using namespace DirectX::SimpleMath;
 
+
 struct VertexPC
 {
     Vector3 pos;
@@ -36,6 +37,14 @@ struct VertexPT
     Vector2 uv;
 };
 
+struct VertexPTN
+{
+    Vector3 pos;
+    Vector2 uv;
+    Vector3 normal;
+};
+
+
 struct VertexP  // Skybox용
 {
     Vector3 pos;
@@ -47,9 +56,17 @@ struct CBVS
     Matrix gViewProj;
 };
 
+// Pixel Shader용 상수 버퍼
+struct CBPS
+{
+    Vector3 lightPos; float lightRange;
+    Vector3 lightColor; float pad;
+    Vector3 eyePos; float specPower;
+};
+
 struct App
 {
-    // DX Core
+    //Direct3D 11의 기본 렌더링 파이프라인 구성요소
     ComPtr<IDXGISwapChain>           m_SwapChain;
     ComPtr<ID3D11Device>             m_Device;
     ComPtr<ID3D11DeviceContext>      m_Context;
@@ -58,16 +75,15 @@ struct App
     ComPtr<ID3D11DepthStencilView>   m_DSV;
 
     // Shaders / Pipeline
-    ComPtr<ID3D11VertexShader>       m_VSColor; // Grid: Color shader
+    ComPtr<ID3D11VertexShader>       m_VSColor;
     ComPtr<ID3D11PixelShader>        m_PSColor;
-    
     ComPtr<ID3D11VertexShader>       m_VSTex;
     ComPtr<ID3D11PixelShader>        m_PSTex;
-
     ComPtr<ID3D11InputLayout>        m_InputLayoutColor;
     ComPtr<ID3D11InputLayout>        m_InputLayoutTex;
-    
-    ComPtr<ID3D11Buffer>             m_CBVS;
+
+    ComPtr<ID3D11Buffer>             m_CBVS; // Vertex Shader용 상수 버퍼
+    ComPtr<ID3D11Buffer>             m_CBPS; // Pixel Shader용 상수 버퍼
 
     // Skybox
     ComPtr<ID3D11VertexShader>       m_VSSky;
@@ -79,13 +95,13 @@ struct App
     ComPtr<ID3D11SamplerState>       m_SkySampler;
     ComPtr<ID3D11DepthStencilState>  m_SkyDSS;
     ComPtr<ID3D11RasterizerState>    m_SkyRS;
+
+    
     UINT                             m_SkyIndexCount = 0;
 
     // Texture (Box 전용)
     ComPtr<ID3D11ShaderResourceView> m_TexSRV;
     ComPtr<ID3D11SamplerState>       m_Sampler;
-    ComPtr<ID3D11ShaderResourceView> m_TexSRVGrass;
-    ComPtr<ID3D11SamplerState>       m_SamplerGrass;
 
     // Geometry
     ComPtr<ID3D11Buffer>             m_GridVB;
@@ -196,17 +212,13 @@ struct App
         // --------------------------------------------------------
         if (!CreateShaders()) return false;
         if (!CreateSkyShader()) return false;
-        
+
         CreateConstantBuffer();
         CreateGridVB();
         CreateBoxMesh();
-        CreateGrassBoxMesh();
         CreateSkyMesh();
-
         LoadBoxTexture();
-        LoadGrassBoxTexture();
         LoadSkyTexture();
-
         CreateSkyRenderStates();
 
         // --------------------------------------------------------
@@ -241,7 +253,6 @@ struct App
         td.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
         td.SampleDesc.Count = 1;
         td.BindFlags = D3D11_BIND_DEPTH_STENCIL;
-
         m_Device->CreateTexture2D(&td, nullptr, m_DSVTex.GetAddressOf());
         m_Device->CreateDepthStencilView(m_DSVTex.Get(), nullptr, m_DSV.GetAddressOf());
     }
@@ -297,13 +308,20 @@ struct App
         }
         m_Device->CreatePixelShader(psb->GetBufferPointer(), psb->GetBufferSize(), nullptr, m_PSTex.GetAddressOf());
 
-        D3D11_INPUT_ELEMENT_DESC ilTex[] =
+    /*    D3D11_INPUT_ELEMENT_DESC ilTex[] =
         {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(VertexPT, pos), D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, offsetof(VertexPT, uv),  D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        };*/
+    
+        D3D11_INPUT_ELEMENT_DESC ilTexN[] =
+        {
+            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(VertexPTN,pos), D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, offsetof(VertexPTN,uv),  D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(VertexPTN,normal), D3D11_INPUT_PER_VERTEX_DATA, 0 },
         };
 
-        m_Device->CreateInputLayout(ilTex, _countof(ilTex),
+        m_Device->CreateInputLayout(ilTexN, _countof(ilTexN),
             vsb->GetBufferPointer(), vsb->GetBufferSize(),
             m_InputLayoutTex.GetAddressOf());
 
@@ -410,11 +428,11 @@ struct App
         sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
         sd.ComparisonFunc = D3D11_COMPARISON_NEVER;
         sd.MaxLOD = D3D11_FLOAT32_MAX;
-
         m_Device->CreateSamplerState(&sd, m_SkySampler.GetAddressOf());
     }
 
-    void CreateSkyRenderStates() // depth stencil 만드는 과정
+
+    void CreateSkyRenderStates()
     {
         D3D11_DEPTH_STENCIL_DESC dsd{};
         dsd.DepthEnable = TRUE;
@@ -430,14 +448,25 @@ struct App
         m_Device->CreateRasterizerState(&rd, m_SkyRS.GetAddressOf());
     }
 
+
     void CreateConstantBuffer()
     {
+        // Vertex Shader용 상수 버퍼
         D3D11_BUFFER_DESC bd{};
         bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         bd.ByteWidth = sizeof(CBVS);
         bd.Usage = D3D11_USAGE_DYNAMIC;
         bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         m_Device->CreateBuffer(&bd, nullptr, m_CBVS.GetAddressOf());
+
+        // Pixel Shader용 상수 버퍼
+        D3D11_BUFFER_DESC pbd{};
+        pbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        pbd.ByteWidth = sizeof(CBPS);
+        pbd.Usage = D3D11_USAGE_DYNAMIC;
+        pbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        m_Device->CreateBuffer(&pbd, nullptr, m_CBPS.GetAddressOf());
+
     }
 
     void CreateGridVB()
@@ -449,8 +478,8 @@ struct App
         std::vector<VertexPC> v;
         v.reserve((N * 2 + 1) * 4);
 
-        Vector3 cMajor(1.0f, 1.0f, 0.0f); // 노란색
-        Vector3 cMinor(0.15f, 0.15f, 0.15f);
+        Vector3 cMajor(1.0f, 1.0f, 1.0f); 
+        Vector3 cMinor(0.7f, 0.7f, 0.7f);
 
         Vector3 cAxisX(0.8f, 0.2f, 0.2f);
         Vector3 cAxisZ(0.2f, 0.4f, 0.8f);
@@ -475,12 +504,12 @@ struct App
         bd.ByteWidth = UINT(v.size() * sizeof(VertexPC));
         bd.Usage = D3D11_USAGE_IMMUTABLE;
         D3D11_SUBRESOURCE_DATA sd{ v.data(), 0, 0 };
-
         m_Device->CreateBuffer(&bd, &sd, m_GridVB.GetAddressOf());
     }
 
     void CreateBoxMesh()
     {
+        // 정점 정보
         Vector3 p[8] =
         {
             {-0.5f, 0.0f, -0.5f}, {+0.5f, 0.0f, -0.5f},
@@ -489,7 +518,8 @@ struct App
             {+0.5f, 1.0f, +0.5f}, {-0.5f, 1.0f, +0.5f},
         };
 
-        VertexPT v24[24] =
+        // UV만 추가
+       /* VertexPT v24[24] =
         {
             {p[0], {0,1}}, {p[1], {1,1}}, {p[2], {1,0}}, {p[3], {0,0}},
             {p[1], {0,1}}, {p[5], {1,1}}, {p[6], {1,0}}, {p[2], {0,0}},
@@ -497,8 +527,37 @@ struct App
             {p[4], {0,1}}, {p[0], {1,1}}, {p[3], {1,0}}, {p[7], {0,0}},
             {p[3], {0,1}}, {p[2], {1,1}}, {p[6], {1,0}}, {p[7], {0,0}},
             {p[4], {0,0}}, {p[5], {1,0}}, {p[1], {1,1}}, {p[0], {0,1}},
+        };*/
+
+        // UV + 노멀 추가
+        VertexPTN v24[24] =
+        {
+            // Front (-Z)
+            {p[0], {0,1}, {0,0,-1}}, {p[1], {1,1}, {0,0,-1}},
+            {p[2], {1,0}, {0,0,-1}}, {p[3], {0,0}, {0,0,-1}},
+
+            // Right (+X)
+            {p[1], {0,1}, {1,0,0}}, {p[5], {1,1}, {1,0,0}},
+            {p[6], {1,0}, {1,0,0}}, {p[2], {0,0}, {1,0,0}},
+
+            // Back (+Z)
+            {p[5], {0,1}, {0,0,1}}, {p[4], {1,1}, {0,0,1}},
+            {p[7], {1,0}, {0,0,1}}, {p[6], {0,0}, {0,0,1}},
+
+            // Left (-X)
+            {p[4], {0,1}, {-1,0,0}}, {p[0], {1,1}, {-1,0,0}},
+            {p[3], {1,0}, {-1,0,0}}, {p[7], {0,0}, {-1,0,0}},
+
+            // Top (+Y)
+            {p[3], {0,1}, {0,1,0}}, {p[2], {1,1}, {0,1,0}},
+            {p[6], {1,0}, {0,1,0}}, {p[7], {0,0}, {0,1,0}},
+
+            // Bottom (-Y)
+            {p[4], {0,0}, {0,-1,0}}, {p[5], {1,0}, {0,-1,0}},
+            {p[1], {1,1}, {0,-1,0}}, {p[0], {0,1}, {0,-1,0}},
         };
 
+      
         uint16_t idx[] =
         {
             0,1,2, 0,2,3,
@@ -508,7 +567,10 @@ struct App
             16,17,18, 16,18,19,
             20,21,22, 20,22,23
         };
+
         m_BoxIndexCount = _countof(idx);
+
+       
 
         D3D11_BUFFER_DESC vbd{};
         vbd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
@@ -522,54 +584,6 @@ struct App
         ibd.ByteWidth = sizeof(idx);
         ibd.Usage = D3D11_USAGE_IMMUTABLE;
         D3D11_SUBRESOURCE_DATA isd{ idx, 0, 0 };
-
-        m_Device->CreateBuffer(&ibd, &isd, m_BoxIB.GetAddressOf());
-    }
-
-    void CreateGrassBoxMesh()
-    {
-        Vector3 p[8] =
-        {
-            {-0.5f, 0.0f, -0.5f}, {+0.5f, 0.0f, -0.5f},
-            {+0.5f, 1.0f, -0.5f}, {-0.5f, 1.0f, -0.5f},
-            {-0.5f, 0.0f, +0.5f}, {+0.5f, 0.0f, +0.5f},
-            {+0.5f, 1.0f, +0.5f}, {-0.5f, 1.0f, +0.5f},
-        };
-
-        VertexPT v24[24] =
-        {
-            {p[0], {0,1}}, {p[1], {1,1}}, {p[2], {1,0}}, {p[3], {0,0}},
-            {p[1], {0,1}}, {p[5], {1,1}}, {p[6], {1,0}}, {p[2], {0,0}},
-            {p[5], {0,1}}, {p[4], {1,1}}, {p[7], {1,0}}, {p[6], {0,0}},
-            {p[4], {0,1}}, {p[0], {1,1}}, {p[3], {1,0}}, {p[7], {0,0}},
-            {p[3], {0,1}}, {p[2], {1,1}}, {p[6], {1,0}}, {p[7], {0,0}},
-            {p[4], {0,0}}, {p[5], {1,0}}, {p[1], {1,1}}, {p[0], {0,1}},
-        };
-
-        uint16_t idx[] =
-        {
-            0,1,2, 0,2,3,
-            4,5,6, 4,6,7,
-            8,9,10, 8,10,11,
-            12,13,14, 12,14,15,
-            16,17,18, 16,18,19,
-            20,21,22, 20,22,23
-        };
-        m_BoxIndexCount = _countof(idx);
-
-        D3D11_BUFFER_DESC vbd{};
-        vbd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-        vbd.ByteWidth = sizeof(v24);
-        vbd.Usage = D3D11_USAGE_IMMUTABLE;
-        D3D11_SUBRESOURCE_DATA vsd{ v24, 0, 0 };
-        m_Device->CreateBuffer(&vbd, &vsd, m_BoxVB.GetAddressOf());
-
-        D3D11_BUFFER_DESC ibd{};
-        ibd.BindFlags = D3D11_BIND_INDEX_BUFFER;
-        ibd.ByteWidth = sizeof(idx);
-        ibd.Usage = D3D11_USAGE_IMMUTABLE;
-        D3D11_SUBRESOURCE_DATA isd{ idx, 0, 0 };
-
         m_Device->CreateBuffer(&ibd, &isd, m_BoxIB.GetAddressOf());
     }
 
@@ -585,32 +599,6 @@ struct App
         m_Device->CreateSamplerState(&sd, m_Sampler.GetAddressOf());
     }
 
-    void LoadGrassBoxTexture()
-    {
-        // DDS CubeMap 로드
-        HRESULT hr = CreateDDSTextureFromFile(
-            m_Device.Get(),
-            L"Field_micro04.dds",
-            nullptr,
-            m_TexSRVGrass.GetAddressOf()
-        );
-
-        if (FAILED(hr))
-            OutputDebugString(L"Failed to load Field_micro04.dds\n");
-
-        // Cube 샘플러: CLAMP 대신 WRAP을 써도 무방
-        D3D11_SAMPLER_DESC sd{};
-        sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-        sd.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-        sd.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-        sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-        sd.ComparisonFunc = D3D11_COMPARISON_NEVER;
-        sd.MaxLOD = D3D11_FLOAT32_MAX;
-
-        m_Device->CreateSamplerState(&sd, m_SamplerGrass.GetAddressOf());
-
-    }
-
     void UpdateAndDraw()
     {
         float clear[4] = { 0.08f, 0.09f, 0.11f, 1.0f };
@@ -618,52 +606,63 @@ struct App
         m_Context->ClearRenderTargetView(m_RTV.Get(), clear);
         m_Context->ClearDepthStencilView(m_DSV.Get(), D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
 
-        //“화면 크기(m_Width × m_Height) 영역 전체를 렌더링 대상으로 지정
-		// 매 프레임마다 뷰포트 설정을 할 필요는 없지만, 여기서는 명확히 하기 위해 매 프레임 설정
         D3D11_VIEWPORT vp{ 0,0,(FLOAT)m_Width,(FLOAT)m_Height,0,1 };
         m_Context->RSSetViewports(1, &vp);
 
-        //순서는 지켜져야한다.
         // ---- Skybox ----
         RenderSkybox();
 
+       // m_Context->ClearDepthStencilView(m_DSV.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
         // ---- Grid ----
         m_Context->IASetInputLayout(m_InputLayoutColor.Get());
         m_Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
-
+        
         UINT stride = sizeof(VertexPC), offset = 0;
+        
         m_Context->IASetVertexBuffers(0, 1, m_GridVB.GetAddressOf(), &stride, &offset);
         m_Context->VSSetShader(m_VSColor.Get(), nullptr, 0);
         m_Context->PSSetShader(m_PSColor.Get(), nullptr, 0);
-        
-		MapAndSetCB(Matrix::Identity, m_View * m_Proj); 
-        
+        MapAndSetCB(Matrix::Identity, m_View * m_Proj);
         m_Context->Draw(m_GridVertexCount, 0);
 
         // ---- Box ----
         m_Context->IASetInputLayout(m_InputLayoutTex.Get());
         m_Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-        stride = sizeof(VertexPT); offset = 0;
-
-        m_Context->IASetVertexBuffers(0, 1, m_BoxVB.GetAddressOf(), &stride, &offset);
-        m_Context->IASetIndexBuffer(m_BoxIB.Get(), DXGI_FORMAT_R16_UINT, 0);
         
+     /*   stride = sizeof(VertexPT); offset = 0;
+        m_Context->IASetVertexBuffers(0, 1, m_BoxVB.GetAddressOf(), &stride, &offset);*/
+
+        UINT stride2 = sizeof(VertexPTN), offset2 = 0;
+        m_Context->IASetVertexBuffers(0, 1, m_BoxVB.GetAddressOf(), &stride2, &offset2);
+
+        // 카메라 위치 계산
+        float x = m_CamRadius * cosf(m_CamPitch) * cosf(m_CamYaw);
+        float z = m_CamRadius * cosf(m_CamPitch) * sinf(m_CamYaw);
+        float y = m_CamRadius * sinf(m_CamPitch);
+
+        D3D11_MAPPED_SUBRESOURCE ms{};
+        m_Context->Map(m_CBPS.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms);
+        auto* cb = reinterpret_cast<CBPS*>(ms.pData);
+        //cb->lightPos = Vector3(4, 6, -3);   // 라이트 위치
+        cb->lightPos = Vector3(x + 2.0f, y + 2.0f, z + 2.0f);   // 라이트 위치
+
+        cb->lightRange = 20.0f;
+        cb->lightColor = Vector3(1, 1, 0.8f);
+        cb->eyePos = Vector3(x, y, z);      // 카메라 위치
+        cb->specPower = 32.0f;
+        m_Context->Unmap(m_CBPS.Get(), 0);
+        m_Context->PSSetConstantBuffers(1, 1, m_CBPS.GetAddressOf());
+
+        m_Context->IASetIndexBuffer(m_BoxIB.Get(), DXGI_FORMAT_R16_UINT, 0);
         m_Context->VSSetShader(m_VSTex.Get(), nullptr, 0);
         m_Context->PSSetShader(m_PSTex.Get(), nullptr, 0);
-        
         m_Context->PSSetShaderResources(0, 1, m_TexSRV.GetAddressOf());
         m_Context->PSSetSamplers(0, 1, m_Sampler.GetAddressOf());
-
-        //Grass 로딩
-        //m_Context->PSSetShaderResources(0, 1, m_TexSRVGrass.GetAddressOf());
-        //m_Context->PSSetSamplers(0, 1, m_SamplerGrass.GetAddressOf());
-        
         MapAndSetCB(m_BoxWorld, m_View * m_Proj);
-        
         m_Context->DrawIndexed(m_BoxIndexCount, 0, 0);
 
         m_SwapChain->Present(1, 0);
+        //m_SwapChain->Present(0, 0); V-Sync Off
     }
 
     void RenderSkybox()
@@ -697,7 +696,7 @@ struct App
         m_Context->Map(m_CBVS.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
         auto* cb = reinterpret_cast<CBVS*>(mapped.pData);
         cb->gWorld = Matrix::Identity.Transpose();
-        cb->gViewProj = skyVP.Transpose(); // vp : view projection
+        cb->gViewProj = skyVP.Transpose();
         m_Context->Unmap(m_CBVS.Get(), 0);
         m_Context->VSSetConstantBuffers(0, 1, m_CBVS.GetAddressOf());
 
@@ -739,13 +738,10 @@ struct App
     {
         D3D11_MAPPED_SUBRESOURCE ms{};
         m_Context->Map(m_CBVS.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms);
-
         auto* cb = reinterpret_cast<CBVS*>(ms.pData);
         cb->gWorld = world.Transpose();
         cb->gViewProj = viewProj.Transpose();
-        
         m_Context->Unmap(m_CBVS.Get(), 0);
-        
         m_Context->VSSetConstantBuffers(0, 1, m_CBVS.GetAddressOf());
     }
 
@@ -798,39 +794,19 @@ struct App
 
     void UpdateView()
     {
-        // 1️. 각도 및 거리 범위 제한
-        m_CamPitch = std::clamp(m_CamPitch, XMConvertToRadians(-85.0f), XMConvertToRadians(85.0f));
+        m_CamPitch = std::clamp(m_CamPitch, XMConvertToRadians(-89.0f), XMConvertToRadians(89.0f));
         m_CamRadius = std::clamp(m_CamRadius, 2.0f, 200.0f);
 
-        // 2. Yaw 값 정규화 (회전 누적 방지)
-        if (m_CamYaw > XM_2PI)  m_CamYaw -= XM_2PI;
-        if (m_CamYaw < 0.0f)    m_CamYaw += XM_2PI;
+        float x = m_CamRadius * cosf(m_CamPitch) * cosf(m_CamYaw);
+        float z = m_CamRadius * cosf(m_CamPitch) * sinf(m_CamYaw);
+        float y = m_CamRadius * sinf(m_CamPitch);
 
-        // 3️. 구면 좌표 -> 데카르트 좌표 변환
-        const float cosPitch = cosf(m_CamPitch);
-        const float sinPitch = sinf(m_CamPitch);
-        const float cosYaw = cosf(m_CamYaw);
-        const float sinYaw = sinf(m_CamYaw);
+        m_View = Matrix::CreateLookAt(Vector3(x, y, z), Vector3(0, 0, 0), Vector3(0, 1, 0));
 
-        const float x = m_CamRadius * cosPitch * cosYaw;
-        const float z = m_CamRadius * cosPitch * sinYaw;
-        const float y = m_CamRadius * sinPitch;
-
-        Vector3 camPos(x, y, z);
-        Vector3 target(0.0f, 0.0f, 0.0f);
-
-        // 4️. Up 벡터 뒤집힘 방지
-        Vector3 up = (fabsf(m_CamPitch) > XMConvertToRadians(89.5f)) ? Vector3(0, 0, 1) : Vector3(0, 1, 0);
-
-        // 5️. 뷰 행렬 생성
-        m_View = Matrix::CreateLookAt(camPos, target, up);
-
-        // 6️. 디버그용 윈도우 타이틀 업데이트
-        wchar_t title[128];
-        swprintf_s(title, L"DX11 Skybox + Grid + Box  |  CamPos: (%.2f, %.2f, %.2f)", x, y, z);
-        SetWindowTextW(m_hWnd, title);
+        wchar_t t[128];
+        swprintf_s(t, L"DX11 Skybox + Grid + Box  |  XYZ: %.2f, %.2f, %.2f", x, y, z);
+        SetWindowText(m_hWnd, t);
     }
-
 
     void Resize(UINT w, UINT h)
     {
@@ -873,6 +849,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             g_App->m_RBtnDown = true;
             SetCapture(hWnd);
+            g_App->m_LastMouse.x = GET_X_LPARAM(lParam);
+            g_App->m_LastMouse.y = GET_Y_LPARAM(lParam);
         }
         break;
 
@@ -905,18 +883,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             int delta = GET_WHEEL_DELTA_WPARAM(wParam);
             g_App->m_CamRadius *= (delta > 0) ? 0.9f : 1.1f;
             g_App->UpdateView();
-
         }
         break;
 
-    case WM_MBUTTONDOWN:  //Wheel 클릭
-        if (g_App)
-        {
-            g_App->m_LastMouse.x = GET_X_LPARAM(lParam);
-            g_App->m_LastMouse.y = GET_Y_LPARAM(lParam);
-            g_App->OnClick(g_App->m_LastMouse.x, g_App->m_LastMouse.y);
-        }
-        break;
     case WM_DESTROY:
         PostQuitMessage(0);
         break;

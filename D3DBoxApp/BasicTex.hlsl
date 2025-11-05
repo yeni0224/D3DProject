@@ -1,39 +1,66 @@
-// BasicTex.hlsl
-// Textured box (POSITION + TEXCOORD)
-#pragma pack_matrix(column_major)   // C++에서 Transpose()로 올린 행렬과 호환
 
 cbuffer CBVS : register(b0)
 {
-    float4x4 gWorld;
-    float4x4 gViewProj;
-};
+    matrix gWorld;
+    matrix gViewProj;
+}
+
+cbuffer CBPS : register(b1)
+{
+    float3 gLightPos;
+    float gLightRange;
+    float3 gLightColor;
+    float gPad;
+    float3 gEyePos;
+    float gSpecPower;
+}
 
 Texture2D gTex : register(t0);
 SamplerState gSamp : register(s0);
 
-struct VSInput
+struct VS_IN
 {
     float3 pos : POSITION;
-    float2 uv : TEXCOORD0; // 명시적으로 0 붙임
+    float2 uv : TEXCOORD;
+    float3 nrm : NORMAL;
 };
 
 struct PSInput
 {
     float4 pos : SV_POSITION;
     float2 uv : TEXCOORD0;
+    float3 nrmW : TEXCOORD1;
+    float3 posW : TEXCOORD2;
 };
 
-PSInput VSMain(VSInput vin)
+PSInput VSMain(VS_IN i)
 {
-    PSInput v;
-    float4 wpos = mul(float4(vin.pos, 1.0f), gWorld); // model→world
-    v.pos = mul(wpos, gViewProj); // world→clip
-    v.uv = vin.uv;
-    return v;
+    PSInput o;
+    float4 posW = mul(float4(i.pos, 1), gWorld);
+    o.pos = mul(posW, gViewProj);
+    o.posW = posW.xyz;
+    o.nrmW = mul((float3x3) gWorld, i.nrm);
+    o.uv = i.uv;
+    return o;
 }
 
-float4 PSMain(PSInput pin) : SV_Target
+float4 PSMain(PSInput i) : SV_Target
 {
-    // 텍스처 샘플링 (필요시 sRGB/Gamma는 런타임 상태로 처리)
-    return gTex.Sample(gSamp, pin.uv);
+    float3 N = normalize(i.nrmW);
+    float3 L = gLightPos - i.posW;
+    float dist = length(L);
+    L /= dist;
+
+    float atten = saturate(1 - dist / gLightRange);
+
+    float3 V = normalize(gEyePos - i.posW);
+    float3 H = normalize(L + V);
+
+    float diff = max(dot(N, L), 0);
+    float spec = pow(max(dot(N, H), 0), gSpecPower) * step(0.0f, diff);
+
+    float3 texColor = gTex.Sample(gSamp, i.uv).rgb;
+    float3 color = texColor * (gLightColor * (diff + 0.2f * atten) + spec);
+
+    return float4(color, 1);
 }
